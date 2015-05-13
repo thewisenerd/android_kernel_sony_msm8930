@@ -179,6 +179,27 @@
 #define CY_I2C_TCH_ADR	0x24
 #define CY_I2C_LDR_ADR	0x24
 
+#if defined(CONFIG_TOUCHSCREEN_CYTTSP3_D2W)
+#define CYTTSP3_D2W
+
+#include <linux/hrtimer.h>
+#include <asm-generic/cputime.h>
+
+#define D2W_PWRKEY_DUR 60
+#define D2W_FEATHER    50
+#define D2W_TIME       700
+
+int d2w_switch = 1;
+
+static cputime64_t tap_time_pre = 0;
+static int x_pre = 0, y_pre = 0;
+static bool touch_cnt = true;
+bool scr_suspended = false;
+
+static struct input_dev * doubletap2wake_pwrdev;
+static DEFINE_MUTEX(pwrkeyworklock);
+
+#endif
 
 #define CORRECT_LAYOUT_FW 		0x01;
 #define FAILD_LAYOUT_FW				0x02;
@@ -1457,6 +1478,64 @@ static void _cyttsp_get_tracks(struct cyttsp *ts, int cur_tch,
 }
 #endif /* --CY_USE_GEN3 */
 
+#ifdef CYTTSP3_D2W
+
+static void doubletap2wake_presspwr(struct work_struct * doubletap2wake_presspwr_work) {
+	if (!mutex_trylock(&pwrkeyworklock))
+		return;
+	input_event(doubletap2wake_pwrdev, EV_KEY, KEY_POWER, 1);
+	input_event(doubletap2wake_pwrdev, EV_SYN, 0, 0);
+	msleep(D2W_PWRKEY_DUR);
+	input_event(doubletap2wake_pwrdev, EV_KEY, KEY_POWER, 0);
+	input_event(doubletap2wake_pwrdev, EV_SYN, 0, 0);
+	msleep(D2W_PWRKEY_DUR);
+	mutex_unlock(&pwrkeyworklock);
+	return;
+}
+static DECLARE_WORK(doubletap2wake_presspwr_work, doubletap2wake_presspwr);
+
+/* PowerKey trigger */
+static void doubletap2wake_pwrtrigger(void) {
+	schedule_work(&doubletap2wake_presspwr_work);
+	return;
+}
+
+void doubletap2wake_reset(void) {
+	tap_time_pre = 0;
+	x_pre = 0;
+	y_pre = 0;
+	touch_cnt = false;
+}
+
+static inline unsigned int calc_feather(int coord, int prev_coord) {
+	return abs(coord - prev_coord);
+}
+
+static inline void new_touch(int x, int y) {
+	tap_time_pre = ktime_to_ms(ktime_get());
+	x_pre = x;
+	y_pre = y;
+}
+
+static bool detect_doubletap2wake(int x, int y)
+{
+	if (touch_cnt == false) {
+		new_touch(x, y);
+	} else {
+		if ((calc_feather(x, x_pre) < D2W_FEATHER) &&
+				(calc_feather(y, y_pre) < D2W_FEATHER) &&
+				(((ktime_to_ms(ktime_get()))-tap_time_pre) < D2W_TIME)) {
+			doubletap2wake_reset();
+			return true;
+		} else {
+			doubletap2wake_reset();
+			new_touch(x, y);
+		}
+	}
+	return false;
+} //detect_doubletap2wake
+#endif // CYTTSP3_D2W
+
 /* read xy_data for all current touches */
 static int _cyttsp_xy_worker(struct cyttsp *ts)
 {
@@ -1729,6 +1808,23 @@ static int _cyttsp_xy_worker(struct cyttsp *ts)
 	}
 
 	input_sync(ts->input);
+
+#ifdef CYTTSP3_D2W
+	if (scr_suspended) {
+		if (d2w_switch) {
+			if (ts->xy_data.touch12_id == 255) { //255? trust @corphish
+				touch_cnt = true;
+			} else {
+				if (detect_doubletap2wake(be16_to_cpu(ts->xy_data.tch1.x),
+						be16_to_cpu(ts->xy_data.tch1.y)) == true) {
+					pr_info("%s: d2w: power on\n", __func__);
+					doubletap2wake_pwrtrigger();
+				}
+			}
+		}
+	}
+#endif // CYTTSP3_D2W
+
 	goto _cyttsp_xy_worker_exit;
 
 _cyttsp_xy_worker_error_exit:
@@ -3650,6 +3746,32 @@ static ssize_t cyttsp_drv_upgrade_show(struct device *dev,
 
 static DEVICE_ATTR(drv_upgrade, S_IRUSR | S_IWUSR | S_IRGRP |S_IWGRP |
 	S_IROTH , cyttsp_drv_upgrade_show, NULL);
+#if defined(CYTTSP3_D2W)
+static ssize_t d2w_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	size_t count = 0;
+
+	count += sprintf(buf, "%d\n", d2w_switch);
+
+	return count;
+}
+
+static ssize_t d2w_dump(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	if (buf[0] == '0') {
+		d2w_switch = 0;
+	} else if (buf[0] == '1') {
+		d2w_switch = 1;
+	}
+
+	return count;
+}
+
+static DEVICE_ATTR(d2w_switch, (S_IWUSR|S_IRUGO),
+	d2w_show, d2w_dump);
+#endif // CYTTSP3_D2W
 static void cyttsp_ldr_init(struct cyttsp *ts)
 {
 #ifdef CONFIG_TOUCHSCREEN_DEBUG
@@ -3718,6 +3840,10 @@ static void cyttsp_ldr_init(struct cyttsp *ts)
 
 
 #endif
+#ifdef CYTTSP3_D2W
+	if (device_create_file(ts->dev, &dev_attr_d2w_switch))
+		pr_err("%s: Cannot create d2w_switch\n", __func__);
+#endif
 
 	return;
 }
@@ -3752,6 +3878,9 @@ static void cyttsp_ldr_free(struct cyttsp *ts)
 
 	device_remove_file(ts->dev, &dev_attr_raw_counts);
 	device_remove_file(ts->dev, &dev_attr_drv_upgrade);
+#endif
+#ifdef CYTTSP3_D2W
+	device_remove_file(ts->dev, &dev_attr_d2w_switch);
 #endif
 }
 
@@ -4400,6 +4529,11 @@ void cyttsp_early_suspend(struct early_suspend *h)
 	int retval = 0;
 	Printlog("[%s]:\n",__FUNCTION__);
 	cyttsp_dbg(ts, CY_DBG_LVL_3, "%s: EARLY SUSPEND ts=%p\n", __func__, ts);
+#ifdef CYTTSP3_D2W
+	if (d2w_switch)
+		enable_irq_wake(ts->irq);
+	else
+#endif
 	retval = cyttsp_suspend(ts);
 	if (retval < 0) {
 		pr_err("%s: Early suspend failed with error code %d\n",
@@ -4413,6 +4547,11 @@ void cyttsp_late_resume(struct early_suspend *h)
 	int retval = 0;
 	Printlog("[%s]:\n",__FUNCTION__);
 	cyttsp_dbg(ts, CY_DBG_LVL_3, "%s: LATE RESUME ts=%p\n", __func__, ts);
+#ifdef CYTTSP3_D2W
+	if (d2w_switch)
+		disable_irq_wake(ts->irq);
+	else
+#endif
 	retval = cyttsp_resume(ts);
 	if (retval < 0) {
 		pr_err("%s: Late resume failed with error code %d\n",
@@ -4885,6 +5024,14 @@ void *cyttsp_core_init(struct cyttsp_bus_ops *bus_ops,
 		goto error_init;
 	}
 
+#ifdef CYTTSP3_D2W
+	doubletap2wake_pwrdev = input_allocate_device();
+	if (!doubletap2wake_pwrdev) {
+		pr_err("Can't allocate suspend autotest power button\n");
+		goto error_init;
+	}
+#endif
+
 	ts->input = input_device;
 	input_device->name = name;
 	snprintf(ts->phys, sizeof(ts->phys), "%s", dev_name(dev));	
@@ -4892,6 +5039,11 @@ void *cyttsp_core_init(struct cyttsp_bus_ops *bus_ops,
 	input_device->dev.parent = ts->dev;
 	ts->bus_type = bus_ops->dev->bus;
 	INIT_WORK(&ts->cyttsp_resume_startup_work, cyttsp_ts_work_func);
+
+#ifdef CYTTSP3_D2W
+	doubletap2wake_pwrdev->name = "dt2w_pwrkey";
+	doubletap2wake_pwrdev->phys = "dt2w_pwrkey/input0";
+#endif
 
 #ifdef CONFIG_USE_SENSOR_FOR_ESD      
 	INIT_DELAYED_WORK(&ts->ESD_work, get_bma250_func);
@@ -4978,11 +5130,18 @@ void *cyttsp_core_init(struct cyttsp_bus_ops *bus_ops,
 	if (ts->platform_data->frmwrk->enable_vkeys)
 		input_set_capability(input_device, EV_KEY, KEY_PROG1);
 
+#ifdef CYTTSP3_D2W
+	input_set_capability(doubletap2wake_pwrdev, EV_KEY, KEY_POWER);
+#endif
+
 	/* enable interrupts */
 #ifdef CY_USE_LEVEL_IRQ
 	irq_flags = IRQF_TRIGGER_LOW | IRQF_ONESHOT;
 #else
 	irq_flags = IRQF_TRIGGER_FALLING | IRQF_ONESHOT;
+#endif
+#ifdef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
+	irq_flags = irq_flags | IRQF_NO_SUSPEND
 #endif
 	cyttsp_dbg(ts, CY_DBG_LVL_3,
 		"%s: Initialize IRQ: flags=%08X\n",
@@ -5004,6 +5163,15 @@ void *cyttsp_core_init(struct cyttsp_bus_ops *bus_ops,
 			__func__, retval);
 		goto error_input_register_device;
 	}
+
+#ifdef CYTTSP3_D2W
+	retval = input_register_device(doubletap2wake_pwrdev);
+	if (retval < 0) {
+		pr_err("%s: Error, failed to register input device r=%d\n",
+			__func__, retval);
+		goto error_input_register_device;
+	}
+#endif
 
 	/* Add /sys files */
 	cyttsp_ldr_init(ts);
@@ -5031,6 +5199,9 @@ void *cyttsp_core_init(struct cyttsp_bus_ops *bus_ops,
 
 error_input_register_device:
 	input_free_device(input_device);
+#ifdef CYTTSP3_D2W
+	input_free_device(doubletap2wake_pwrdev);
+#endif
 error_init:
 
 	mutex_destroy(&ts->data_lock);

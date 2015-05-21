@@ -4698,7 +4698,7 @@ void cyttsp_early_suspend(struct early_suspend *h)
 	cyttsp_dbg(ts, CY_DBG_LVL_3, "%s: EARLY SUSPEND ts=%p\n", __func__, ts);
 #ifdef CYTTSP3_D2W
 	if (d2w_switch){
-		enable_irq(ts->irq);
+		//enable_irq(ts->irq);
 		enable_irq_wake(ts->irq);
 	}
 		
@@ -4721,7 +4721,7 @@ void cyttsp_late_resume(struct early_suspend *h)
 	if (d2w_switch)// || s2w_switch > 0)
 		{
 			disable_irq_wake(ts->irq);
-			disable_irq(ts->irq);
+			//disable_irq(ts->irq);
 		}
 	else
 #endif

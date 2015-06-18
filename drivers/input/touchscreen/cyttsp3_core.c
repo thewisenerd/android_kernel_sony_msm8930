@@ -9,6 +9,7 @@
  *
  * Copyright (C) 2009-2012 Cypress Semiconductor, Inc.
  * Copyright (C) 2010-2011 Motorola Mobility, Inc.
+ * Copyright (C)      2015 Vineeth Raj <contact.twn@openmailbox.org>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -184,6 +185,8 @@
 
 #include <linux/hrtimer.h>
 #include <asm-generic/cputime.h>
+
+#include <linux/input/doubletap2wake.h>
 
 #define D2W_PWRKEY_DUR 60
 #define D2W_FEATHER    50
@@ -1479,6 +1482,12 @@ static void _cyttsp_get_tracks(struct cyttsp *ts, int cur_tch,
 #endif /* --CY_USE_GEN3 */
 
 #ifdef CYTTSP3_D2W
+
+extern void doubletap2wake_setdev(struct input_dev * input_device) {
+	doubletap2wake_pwrdev = input_device;
+	printk(LOGTAG"set doubletap2wake_pwrdev: %s\n", doubletap2wake_pwrdev->name);
+}
+EXPORT_SYMBOL_GPL(doubletap2wake_setdev);
 
 static void doubletap2wake_presspwr(struct work_struct * doubletap2wake_presspwr_work) {
 	if (!mutex_trylock(&pwrkeyworklock))
@@ -5024,14 +5033,6 @@ void *cyttsp_core_init(struct cyttsp_bus_ops *bus_ops,
 		goto error_init;
 	}
 
-#ifdef CYTTSP3_D2W
-	doubletap2wake_pwrdev = input_allocate_device();
-	if (!doubletap2wake_pwrdev) {
-		pr_err("Can't allocate suspend autotest power button\n");
-		goto error_init;
-	}
-#endif
-
 	ts->input = input_device;
 	input_device->name = name;
 	snprintf(ts->phys, sizeof(ts->phys), "%s", dev_name(dev));	
@@ -5039,11 +5040,6 @@ void *cyttsp_core_init(struct cyttsp_bus_ops *bus_ops,
 	input_device->dev.parent = ts->dev;
 	ts->bus_type = bus_ops->dev->bus;
 	INIT_WORK(&ts->cyttsp_resume_startup_work, cyttsp_ts_work_func);
-
-#ifdef CYTTSP3_D2W
-	doubletap2wake_pwrdev->name = "dt2w_pwrkey";
-	doubletap2wake_pwrdev->phys = "dt2w_pwrkey/input0";
-#endif
 
 #ifdef CONFIG_USE_SENSOR_FOR_ESD      
 	INIT_DELAYED_WORK(&ts->ESD_work, get_bma250_func);
@@ -5130,10 +5126,6 @@ void *cyttsp_core_init(struct cyttsp_bus_ops *bus_ops,
 	if (ts->platform_data->frmwrk->enable_vkeys)
 		input_set_capability(input_device, EV_KEY, KEY_PROG1);
 
-#ifdef CYTTSP3_D2W
-	input_set_capability(doubletap2wake_pwrdev, EV_KEY, KEY_POWER);
-#endif
-
 	/* enable interrupts */
 #ifdef CY_USE_LEVEL_IRQ
 	irq_flags = IRQF_TRIGGER_LOW | IRQF_ONESHOT;
@@ -5164,15 +5156,6 @@ void *cyttsp_core_init(struct cyttsp_bus_ops *bus_ops,
 		goto error_input_register_device;
 	}
 
-#ifdef CYTTSP3_D2W
-	retval = input_register_device(doubletap2wake_pwrdev);
-	if (retval < 0) {
-		pr_err("%s: Error, failed to register input device r=%d\n",
-			__func__, retval);
-		goto error_input_register_device;
-	}
-#endif
-
 	/* Add /sys files */
 	cyttsp_ldr_init(ts);
 
@@ -5199,9 +5182,6 @@ void *cyttsp_core_init(struct cyttsp_bus_ops *bus_ops,
 
 error_input_register_device:
 	input_free_device(input_device);
-#ifdef CYTTSP3_D2W
-	input_free_device(doubletap2wake_pwrdev);
-#endif
 error_init:
 
 	mutex_destroy(&ts->data_lock);

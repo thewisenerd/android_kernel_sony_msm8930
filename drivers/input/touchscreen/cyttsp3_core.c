@@ -4310,6 +4310,9 @@ static DEVICE_ATTR(s2w_v, (S_IWUSR|S_IRUGO),
 //CYTTSP3_D2W
 static void cyttsp_ldr_init(struct cyttsp *ts)
 {
+#ifdef CYTTSP3_D2W
+       int rc = 0;
+#endif
 #ifdef CONFIG_TOUCHSCREEN_DEBUG
 	if (device_create_file(ts->dev, &dev_attr_drv_debug))
 		pr_err("%s: Cannot create drv_debug\n", __func__);
@@ -4384,7 +4387,6 @@ static void cyttsp_ldr_init(struct cyttsp *ts)
 	if (android_touch_kobj == NULL) {
 		pr_warn("%s: android_touch_kobj create_and_add failed\n", __func__);
 	}
-       int rc = 0;
        rc = sysfs_create_file(android_touch_kobj, &dev_attr_doubletap2wake);
 	if (rc) {
 		pr_warn("%s: sysfs_create_file failed for doubletap2wake\n", __func__);
@@ -4465,9 +4467,6 @@ static void cyttsp_ldr_free(struct cyttsp *ts)
 
 	device_remove_file(ts->dev, &dev_attr_raw_counts);
 	device_remove_file(ts->dev, &dev_attr_drv_upgrade);
-#endif
-#ifdef CYTTSP3_D2W
-	device_remove_file(ts->dev, &dev_attr_d2w_switch);
 #endif
 }
 

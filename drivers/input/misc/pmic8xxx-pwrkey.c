@@ -148,6 +148,12 @@ static int __devinit pmic8xxx_pwrkey_probe(struct platform_device *pdev)
 	}
 
 	input_set_capability(pwr, EV_KEY, KEY_POWER);
+#ifdef CONFIG_TOUCHSCREEN_CYTTSP3_D2W
+	input_set_capability(pwr, EV_KEY, KEY_PLAYPAUSE);
+	input_set_capability(pwr, EV_KEY, KEY_PREVIOUSSONG);
+	input_set_capability(pwr, EV_KEY, KEY_NEXTSONG);
+	input_set_capability(pwr, EV_KEY, KEY_PHONE);
+#endif
 
 	pwr->name = "pmic8xxx_pwrkey";
 	pwr->phys = "pmic8xxx_pwrkey/input0";
